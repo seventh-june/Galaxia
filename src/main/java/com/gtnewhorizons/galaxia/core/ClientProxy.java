@@ -8,6 +8,7 @@ import net.minecraftforge.common.MinecraftForge;
 import com.gtnewhorizons.galaxia.client.KeyBinds;
 import com.gtnewhorizons.galaxia.client.gui.mui.ItemPickerScreen;
 import com.gtnewhorizons.galaxia.client.render.rockets.GantryItemRenderer;
+import com.gtnewhorizons.galaxia.client.render.rockets.GantryPlacementPreviewHandler;
 import com.gtnewhorizons.galaxia.client.render.rockets.GantryRenderer;
 import com.gtnewhorizons.galaxia.client.render.rockets.RocketRenderer;
 import com.gtnewhorizons.galaxia.client.render.rockets.RocketSchematicItemRenderer;
@@ -60,6 +61,7 @@ public class ClientProxy extends CommonProxy {
         ClientRegistry.bindTileEntitySpecialRenderer(TileEntityGantry.class, new GantryRenderer());
         MinecraftForgeClient
             .registerItemRenderer(Item.getItemFromBlock(GalaxiaBlocksEnum.GANTRY.get()), new GantryItemRenderer());
+        MinecraftForge.EVENT_BUS.register(new GantryPlacementPreviewHandler());
         MinecraftForgeClient
             .registerItemRenderer(GalaxiaItemList.ITEM_ROCKET_SCHEMATIC.getItem(), new RocketSchematicItemRenderer());
 
