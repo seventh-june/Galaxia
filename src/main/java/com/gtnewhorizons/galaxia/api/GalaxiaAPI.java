@@ -10,12 +10,14 @@ import java.util.function.ToIntFunction;
 
 import javax.annotation.Nonnull;
 
+import net.minecraft.block.Block;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.ResourceLocation;
+import net.minecraft.world.World;
 import net.minecraftforge.common.MinecraftForge;
 
 import com.gtnewhorizons.galaxia.compat.TempTeamCompat;
@@ -46,6 +48,8 @@ import com.gtnewhorizons.galaxia.registry.outpost.station.StationTileCoord;
 import baubles.api.BaublesApi;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Loader;
+import gregtech.api.GregTechAPI;
+import gregtech.api.interfaces.tileentity.IMachineBlockUpdateable;
 
 /**
  * API underpinning planetary mechanics
@@ -369,6 +373,48 @@ public final class GalaxiaAPI {
                     return true;
                 }
             }
+        }
+
+        return false;
+    }
+
+    public static boolean isMachineBlock(Block block, int blockMetadata) {
+        if (isGregTechLoaded()) {
+            return GregTechAPI.isMachineBlock(block, blockMetadata);
+        }
+
+        return false;
+    }
+
+    /**
+     * Adds a Multi-Machine Block, like my Machine Casings for example. You should call @causeMachineUpdate
+     * in @Block.breakBlock and in {@link Block#onBlockAdded} of your registered Block. You don't need to register
+     * TileEntities which implement {@link IMachineBlockUpdateable}
+     *
+     * @param aBlock the Block
+     * @param aMeta  the Metadata of the Blocks as Bitmask! -1 or ~0 for all Meta-values
+     */
+    @SuppressWarnings("UnusedReturnValue")
+    public static boolean registerMachineBlock(Block aBlock, int aMeta) {
+        if (isGregTechLoaded()) {
+            return GregTechAPI.registerMachineBlock(aBlock, -1);
+        }
+
+        return false;
+    }
+
+    /**
+     * Causes a Machineblock Update This update will cause surrounding MultiBlock Machines to update their
+     * Configuration. You should call this Function in @Block.breakBlock and in @Block.onBlockAdded of your Machine.
+     *
+     * @param aWorld is being the World
+     * @param aX     is the X-Coord of the update causing Block
+     * @param aY     is the Y-Coord of the update causing Block
+     * @param aZ     is the Z-Coord of the update causing Block
+     */
+    public static boolean causeMachineUpdate(World aWorld, int aX, int aY, int aZ) {
+        if (isGregTechLoaded()) {
+            return GregTechAPI.causeMachineUpdate(aWorld, aX, aY, aZ);
         }
 
         return false;

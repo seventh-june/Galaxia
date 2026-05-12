@@ -4,6 +4,7 @@ import net.minecraft.block.Block;
 import net.minecraft.tileentity.TileEntity;
 
 import com.gtnewhorizons.galaxia.core.Galaxia;
+import com.gtnewhorizons.galaxia.registry.block.base.BlockCasing;
 import com.gtnewhorizons.galaxia.registry.block.base.BlockConfigurable;
 import com.gtnewhorizons.galaxia.registry.block.machine.BlockOxygenCollector;
 import com.gtnewhorizons.galaxia.registry.block.machine.BlockOxygenFiller;
@@ -69,21 +70,20 @@ public enum GalaxiaBlocksEnum {
     METEORIC_IRON_BLOCK(new BlockConfigurable("resource/meteoric_iron_block")),
     RAW_SULFUR_BLOCK(new BlockConfigurable("resource/raw_sulfur_block")),
     ENCHANTED_BLOCK_OF_CINNABAR(new BlockConfigurable("resource/enchanted_block_of_cinnabar")),
-    RUSTY_IRON_BLOCK(new BlockConfigurable("rusty_iron_block")),
     BLEEDING_OBSIDIAN(new BlockConfigurable("bleeding_obsidian")
             .hardnessAndResistance(16, 500)
             .harvest("pickaxe", 3)),
-    RUSTY_SCAFFOLDING(new BlockConfigurable("rusty_scaffolding")
-            .opaque()),
-    RUSTY_PANEL(new BlockConfigurable("rusty_panel")),
-    RUSTY_SHEETMETAL(new BlockConfigurable("rusty_sheetmetal")),
-    SPACE_STATION_PANEL(new BlockConfigurable("space_station/space_station_panel")
-        .opaque()),
     RESEARCH_OUTPOST_CASING(new BlockConfigurable("machine/research_outpost_casing")),
     LAUNCHPAD_CASING(new BlockConfigurable("machine/launchpad")),
+
+    // MISC - MULTIBLOCK BLOCKS
+    RUSTY_SCAFFOLDING(new BlockCasing("rusty_scaffolding")),
+    RUSTY_PANEL(new BlockCasing("rusty_panel")),
+    RUSTY_SHEETMETAL(new BlockCasing("rusty_sheetmetal")),
+    SPACE_STATION_PANEL(new BlockCasing("space_station/space_station_panel")),
+    RUSTY_IRON_BLOCK(new BlockCasing("rusty_iron_block")),
+    SPACE_STATION_BLOCK(new BlockCasing("space_station/space_station_block")),
     AIRLOCK_CASING(new BlockAirlockCasing()),
-    SPACE_STATION_BLOCK(new BlockConfigurable("space_station/space_station_block")
-        .opaque()),
 
     ; // leave trailing semicolon
 
