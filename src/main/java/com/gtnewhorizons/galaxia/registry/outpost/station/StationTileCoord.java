@@ -1,6 +1,6 @@
 package com.gtnewhorizons.galaxia.registry.outpost.station;
 
-public record StationTileCoord(byte dx, byte dy) {
+public record StationTileCoord(byte dx, byte dy) implements Comparable<StationTileCoord> {
 
     public static final StationTileCoord CORE = new StationTileCoord((byte) 0, (byte) 0);
 
@@ -20,9 +20,27 @@ public record StationTileCoord(byte dx, byte dy) {
         return new StationTileCoord((byte) dx, (byte) dy);
     }
 
+    public StationTileCoord offset(int dx, int dy) {
+        return StationTileCoord.of(this.dx + dx, this.dy + dy);
+    }
+
     public boolean isOrthogonallyAdjacent(StationTileCoord other) {
         int adx = Math.abs(this.dx - other.dx);
         int ady = Math.abs(this.dy - other.dy);
         return (adx == 1 && ady == 0) || (adx == 0 && ady == 1);
+    }
+
+    @Override
+    public int compareTo(StationTileCoord other) {
+        int cmp = Byte.compare(this.dx, other.dx);
+        if (cmp != 0) return cmp;
+        return Byte.compare(this.dy, other.dy);
+    }
+
+    @Override
+    public String toString() {
+        // Manual toString avoids bytecode downgrader issue with record's default toString()
+        // calling StringBuilder.append(byte) which does not exist on Java 8 (Minecraft target).
+        return "StationTileCoord[dx=" + (int) dx + ", dy=" + (int) dy + "]";
     }
 }

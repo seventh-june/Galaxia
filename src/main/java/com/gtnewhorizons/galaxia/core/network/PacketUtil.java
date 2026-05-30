@@ -1,11 +1,16 @@
 package com.gtnewhorizons.galaxia.core.network;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
-import com.gtnewhorizons.galaxia.core.Galaxia;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialAsset;
 import com.gtnewhorizons.galaxia.registry.interfaces.WithUUID;
+import com.gtnewhorizons.galaxia.registry.outpost.FluidKey;
+import com.gtnewhorizons.galaxia.registry.outpost.InventoryKey;
+import com.gtnewhorizons.galaxia.registry.outpost.ItemStackWrapper;
 import com.gtnewhorizons.galaxia.registry.outpost.logistics.LogisticsDelivery;
 import com.gtnewhorizons.galaxia.registry.outpost.module.ModuleInstance;
 import com.gtnewhorizons.galaxia.registry.outpost.station.StationTileCoord;
@@ -73,37 +78,85 @@ public final class PacketUtil {
 
     // ── Enum helpers ───────────────────────────────────────────────────────
 
-    static <T extends Enum<T>> void writeEnum(ByteBuf buf, T enumValue) {
-        buf.writeByte(enumValue.ordinal());
+    /** Convert an enum value to its unsigned byte ordinal. */
+    public static <T extends Enum<T>> byte enumOrdinal(T value) {
+        return (byte) Objects.requireNonNull(value, "value")
+            .ordinal();
     }
 
+    /**
+     * Convert an unsigned byte ordinal to its enum value, or {@code null} if the ordinal
+     * is out of range. Delegates to {@link #enumFromOrdinal(int, Class)}.
+     */
+    public static <T extends Enum<T>> T enumFromByte(int b, Class<T> enumClass) {
+        return enumFromOrdinal(Byte.toUnsignedInt((byte) b), enumClass);
+    }
+
+    /** Shared ordinal → enum lookup. Returns {@code null} when ordinal is out of range. */
     @SuppressWarnings("unchecked")
+    private static <T extends Enum<T>> T enumFromOrdinal(int ordinal, Class<T> enumClass) {
+        T[] values = enumClass.getEnumConstants();
+        if (ordinal >= 0 && ordinal < values.length) return values[ordinal];
+        return null;
+    }
+
+    static <T extends Enum<T>> void writeEnum(ByteBuf buf, T enumValue) {
+        buf.writeByte(enumOrdinal(enumValue));
+    }
+
+    /**
+     * Read an enum value from a {@link ByteBuf}. Malformed ordinals crash immediately.
+     */
     static <T extends Enum<T>> T readEnum(ByteBuf buf, Class<T> enumClass) {
         int ordinal = buf.readUnsignedByte();
-        T[] values = enumClass.getEnumConstants();
-        if (ordinal >= 0 && ordinal < values.length) return values[ordinal];
-        Galaxia.LOG.warn(
-            "[PacketUtil] Unknown enum ordinal {} for {}, falling back to {}",
-            ordinal,
-            enumClass.getSimpleName(),
-            values[0]);
-        return values[0];
+        T value = enumFromOrdinal(ordinal, enumClass);
+        if (value != null) return value;
+        throw new IllegalStateException(
+            "[PacketUtil] Unknown enum ordinal " + ordinal + " for " + enumClass.getSimpleName());
     }
 
-    public static <T extends Enum<T>> byte enumOrdinal(T value) {
-        return (byte) value.ordinal();
+    // ── ItemStack helpers ──────────────────────────────────────────────
+
+    static void writeInventoryKey(ByteBuf buf, InventoryKey key) {
+        buf.writeBoolean(key.isItem());
+        writeString(buf, key.toKey());
     }
 
-    public static <T extends Enum<T>> T enumFromByte(int b, Class<T> enumClass) {
-        int ordinal = Byte.toUnsignedInt((byte) b);
-        T[] values = enumClass.getEnumConstants();
-        if (ordinal >= 0 && ordinal < values.length) return values[ordinal];
-        Galaxia.LOG.warn(
-            "[PacketUtil] Unknown enum ordinal {} for {}, falling back to {}",
-            ordinal,
-            enumClass.getSimpleName(),
-            values[0]);
-        return values[0];
+    static InventoryKey readInventoryKey(ByteBuf buf) {
+        final boolean item = buf.readBoolean();
+        if (item) {
+            return ItemStackWrapper.fromKey(readString(buf));
+        } else {
+            return FluidKey.fromName(readString(buf));
+        }
     }
 
+    /**
+     * @param keys Must all be of the same type
+     */
+    static void writeInventoryKeys(ByteBuf buf, List<InventoryKey> keys) {
+        if (keys.isEmpty()) return;
+        buf.writeBoolean(
+            keys.getFirst()
+                .isItem());
+        buf.writeInt(keys.size());
+        for (InventoryKey key : keys) {
+            writeString(buf, key.toKey());
+        }
+    }
+
+    static List<InventoryKey> readInventoryKeys(ByteBuf buf) {
+        final boolean item = buf.readBoolean();
+        final int size = buf.readInt();
+        final List<InventoryKey> ret = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            if (item) {
+                ret.add(ItemStackWrapper.fromKey(readString(buf)));
+            } else {
+                ret.add(FluidKey.fromName(readString(buf)));
+            }
+        }
+
+        return ret;
+    }
 }

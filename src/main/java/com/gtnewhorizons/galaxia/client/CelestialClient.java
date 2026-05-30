@@ -5,117 +5,112 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.function.Function;
 
 import javax.annotation.Nullable;
 
-import net.minecraft.client.Minecraft;
 import net.minecraftforge.event.world.WorldEvent;
 
 import com.gtnewhorizons.galaxia.api.GalaxiaCelestialAPI;
-import com.gtnewhorizons.galaxia.compat.TempTeamCompat;
-import com.gtnewhorizons.galaxia.core.Galaxia;
-import com.gtnewhorizons.galaxia.core.network.AssetBuildModulePacket;
+import com.gtnewhorizons.galaxia.compat.teams.GTTeamsCompat;
+import com.gtnewhorizons.galaxia.core.network.AssetFilterUpdatePacket;
+import com.gtnewhorizons.galaxia.core.network.AssetInventoryUpdatePacket;
 import com.gtnewhorizons.galaxia.core.network.AssetModuleUpdatePacket;
 import com.gtnewhorizons.galaxia.core.network.AssetModuleUpdatePacket.ConfigAction;
-import com.gtnewhorizons.galaxia.core.network.LogisticsSyncPacket;
+import com.gtnewhorizons.galaxia.core.network.LogisticsConfigUpdatePacket;
+import com.gtnewhorizons.galaxia.core.network.StarmapActionSyncHandler;
+import com.gtnewhorizons.galaxia.core.profiling.HammerTrajectoryLoadSample;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialAsset;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialAsset.ID;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialAssetStore;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialObject;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialObjectId;
-import com.gtnewhorizons.galaxia.registry.interfaces.Buildable;
-import com.gtnewhorizons.galaxia.registry.orbital.OrbitalTransferPlanner;
 import com.gtnewhorizons.galaxia.registry.outpost.AutomatedFacility;
-import com.gtnewhorizons.galaxia.registry.outpost.logistics.AllowShootingConfig;
+import com.gtnewhorizons.galaxia.registry.outpost.BoundKind;
+import com.gtnewhorizons.galaxia.registry.outpost.InventoryKey;
+import com.gtnewhorizons.galaxia.registry.outpost.ItemStackWrapper;
+import com.gtnewhorizons.galaxia.registry.outpost.LogisticsResourceConfig;
+import com.gtnewhorizons.galaxia.registry.outpost.logistics.LogisticsConfigAccessMode;
 import com.gtnewhorizons.galaxia.registry.outpost.logistics.LogisticsDelivery;
 import com.gtnewhorizons.galaxia.registry.outpost.module.FacilityModuleKind;
-import com.gtnewhorizons.galaxia.registry.outpost.module.ModuleHammer;
+import com.gtnewhorizons.galaxia.registry.outpost.module.HammerVariant;
+import com.gtnewhorizons.galaxia.registry.outpost.module.MinerFocusTier;
 import com.gtnewhorizons.galaxia.registry.outpost.module.ModuleInstance;
-import com.gtnewhorizons.galaxia.registry.outpost.module.ModuleMiner;
-import com.gtnewhorizons.galaxia.registry.outpost.station.ModuleShape;
-import com.gtnewhorizons.galaxia.registry.outpost.station.StationLayout;
+import com.gtnewhorizons.galaxia.registry.outpost.module.ModuleTier;
+import com.gtnewhorizons.galaxia.registry.outpost.recipe.SavedRecipe;
 import com.gtnewhorizons.galaxia.registry.outpost.station.StationTileCoord;
 
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 
-/*
- * This class abstracts CelestialAssetStore, LogisticSignalStore and stores all client state. Its purpose is to be used
- * as an API by the client so that it will never call the underlying stores to avoid server side logic
+/**
+ * Client-side API. Asset storage delegates to {@link CelestialAssetStore#CLIENT},
+ * keeping client and server state isolated in single-player.
+ * Client-side prediction is deferred — see Architecture §15.
  */
 @SideOnly(Side.CLIENT)
 public final class CelestialClient {
 
-    /// This is just used in the UI, I mark it as deprecated since it's just duplicate copied stuff, but I can't be
-    /// bothered to fix the UI
     @Deprecated
-
     public record TransferTarget(CelestialAsset.ID assetId, String displayName, CelestialObject hostBody) {}
 
-    /**
-     * Client-side snapshot of in-flight logistics tasks. Updated by
-     * {@link LogisticsSyncPacket}.
-     * Always empty on the server; never null.
-     */
+    // ── Client-side asset mirror (via CLIENT store) ──
+
+    public static CelestialAsset getByAssetId(CelestialAsset.ID assetId) {
+        return CelestialAssetStore.CLIENT.findAssetInternal(assetId);
+    }
+
+    public static List<CelestialAsset> getState(CelestialObjectId celestialObjectId) {
+        List<CelestialAsset> result = new ArrayList<>();
+        for (CelestialAsset asset : CelestialAssetStore.CLIENT.allAssetsInternal()) {
+            if (asset.celestialObjectId == celestialObjectId) {
+                result.add(asset);
+            }
+        }
+        return result;
+    }
+
+    public static List<CelestialAsset> allAssets() {
+        return CelestialAssetStore.CLIENT.allAssetsInternal();
+    }
+
+    public static List<AutomatedFacility> allOutposts() {
+        List<AutomatedFacility> result = new ArrayList<>();
+        for (CelestialAsset asset : CelestialAssetStore.CLIENT.allAssetsInternal()) {
+            if (asset instanceof AutomatedFacility af) {
+                result.add(af);
+            }
+        }
+        return result;
+    }
+
+    // ── Logistics mirror ──
+
     private static final List<LogisticsDelivery> deliveries = new ArrayList<>();
     private static int deliveryRevision = 0;
     private static int signalRevision = 0;
+    private static HammerTrajectoryLoadSample hammerTrajectoryLoadSample = new HammerTrajectoryLoadSample(0.0, 0.0);
 
-    /**
-     * Client-side snapshot of aggregated logistics signals, indexed by system id.
-     * Updated by {@link LogisticsSyncPacket}.
-     * Always empty on the server; never null.
-     * <p>
-     * Inner map: resourceKey → net signed amount (positive = surplus, negative = deficit).
-     */
     private static final Map<CelestialObjectId, Map<String, Long>> systemSignals = new LinkedHashMap<>();
-
-    /**
-     * Client-side snapshot of aggregated logistics signals, indexed by planetary anchor body id.
-     * Updated alongside {@link #systemSignals}.
-     */
     private static final Map<CelestialObjectId, Map<String, Long>> planetSignals = new LinkedHashMap<>();
 
     private CelestialClient() {}
 
-    public static List<CelestialAsset> getState(CelestialObjectId celestialObjectId) {
-        return CelestialAssetStore.getState(TempTeamCompat.getTeam(), celestialObjectId);
+    public static void registerAsset(CelestialObjectId celestialObjectId, CelestialAsset asset) {
+        StarmapActionSyncHandler.sendRegisterAsset(celestialObjectId, asset);
     }
 
-    public static CelestialAsset createAssetInConstruction(CelestialObjectId celestialObjectId, String displayName,
-        CelestialAsset.Kind kind) {
-        return CelestialAssetStore
-            .createAssetInConstruction(TempTeamCompat.getTeam(), celestialObjectId, displayName, kind);
-    }
-
-    public static CelestialAsset createOperationalAsset(CelestialObjectId celestialObjectId, String displayName,
-        CelestialAsset.Kind kind) {
-        return CelestialAssetStore
-            .createOperationalAsset(TempTeamCompat.getTeam(), celestialObjectId, displayName, kind);
-    }
-
-    public static CelestialAsset getByAssetId(CelestialAsset.ID assetId) {
-        return CelestialAssetStore.findAsset(assetId);
-    }
-
-    public static void add(AutomatedFacility state) {
-        CelestialAssetStore.add(TempTeamCompat.getTeam(), state);
-    }
-
-    public static List<AutomatedFacility> allOutposts() {
-        return CelestialAssetStore.allAssets()
-            .stream()
-            .filter(a -> a instanceof AutomatedFacility)
-            .map(a -> (AutomatedFacility) a)
-            .collect(Collectors.toList());
+    public static void add(CelestialAsset state) {
+        CelestialAssetStore.CLIENT.registerAssetInternal(GTTeamsCompat.getTeam(), state);
     }
 
     public static void clear() {
+        CelestialAssetStore.CLIENT.clearInternal();
         deliveries.clear();
         deliveryRevision = 0;
         signalRevision = 0;
+        hammerTrajectoryLoadSample = new HammerTrajectoryLoadSample(0.0, 0.0);
     }
 
     public static void createModule(ID assetId, FacilityModuleKind kind, boolean creativeBuildModeEnabled) {
@@ -124,29 +119,50 @@ public final class CelestialClient {
 
     public static void createModule(ID assetId, FacilityModuleKind kind, boolean creativeBuildModeEnabled,
         @Nullable StationTileCoord tileCoord) {
-        AutomatedFacility state = CelestialAssetStore.findAsset(assetId) instanceof AutomatedFacility o ? o : null;
+        AutomatedFacility state = getByAssetId(assetId) instanceof AutomatedFacility o ? o : null;
         if (state == null) return;
         if (!kind.isAllowedOn(state.kind)) return;
-        StationTileCoord anchor = tileCoord != null ? tileCoord : StationTileCoord.CORE;
-        ModuleInstance module = kind.create(anchor, ModuleShape.SINGLE, kind.defaultTier());
-        boolean creativePlayer = Minecraft.getMinecraft().thePlayer != null
-            && Minecraft.getMinecraft().thePlayer.capabilities.isCreativeMode;
-        if (creativeBuildModeEnabled && creativePlayer) {
-            module.completeConstruction();
-        }
-        state.addModule(module);
-        StationLayout layout = state.stationLayout();
-        if (tileCoord != null && layout != null) {
-            layout.place(module);
-        }
-        Galaxia.GALAXIA_NETWORK.sendToServer(
-            new AssetBuildModulePacket(
-                assetId,
-                kind,
-                ModuleShape.SINGLE,
-                kind.defaultTier(),
-                creativeBuildModeEnabled,
-                tileCoord));
+        StarmapActionSyncHandler.sendBuildModule(
+            assetId,
+            kind,
+            kind.defaultShape(),
+            kind.defaultTier(),
+            creativeBuildModeEnabled,
+            tileCoord);
+    }
+
+    public static void createModules(ID assetId, FacilityModuleKind kind, boolean creativeBuildModeEnabled,
+        List<StationTileCoord> tileCoords) {
+        AutomatedFacility state = getByAssetId(assetId) instanceof AutomatedFacility o ? o : null;
+        if (state == null) return;
+        if (!kind.isAllowedOn(state.kind)) return;
+        StarmapActionSyncHandler.sendBuildModules(
+            assetId,
+            kind,
+            kind.defaultShape(),
+            kind.defaultTier(),
+            creativeBuildModeEnabled,
+            tileCoords);
+    }
+
+    public static boolean destroyAsset(ID assetId) {
+        return StarmapActionSyncHandler.sendDestroyAsset(assetId);
+    }
+
+    public static boolean cancelConstruction(ID assetId) {
+        return StarmapActionSyncHandler.sendCancelConstruction(assetId);
+    }
+
+    public static boolean startDeconstruction(ID assetId) {
+        return StarmapActionSyncHandler.sendStartDeconstruction(assetId);
+    }
+
+    public static boolean renameAsset(ID assetId, String displayName) {
+        return StarmapActionSyncHandler.sendRenameAsset(assetId, displayName);
+    }
+
+    public static void requestFullSync(ID assetId) {
+        StarmapActionSyncHandler.sendRequestFullSync(assetId);
     }
 
     public static List<TransferTarget> getTransferTargetsInSystem(CelestialObject root, CelestialObject body) {
@@ -159,111 +175,223 @@ public final class CelestialClient {
     }
 
     public static void updateModuleAction(ID assetId, int moduleIndex, AssetModuleUpdatePacket.Action action) {
-        AutomatedFacility state = CelestialAssetStore.findAsset(assetId) instanceof AutomatedFacility o ? o : null;
-        if (state == null) return;
-        var modules = state.modules();
-        if (moduleIndex < 0 || moduleIndex >= modules.size()) return;
-        ModuleInstance module = modules.get(moduleIndex);
-        switch (action) {
-            case ENABLE -> module.updateStatus(Buildable.Status.OPERATIONAL);
-            case DISABLE -> module.updateStatus(Buildable.Status.DISABLED);
-            case DESTROY -> state.removeModule(module.id);
-        }
-        Galaxia.GALAXIA_NETWORK.sendToServer(AssetModuleUpdatePacket.action(assetId, moduleIndex, module.id, action));
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.action(assetId, moduleIndex, module.id, action));
     }
 
     public static void updateModuleConfig(ID assetId, int moduleIndex, ConfigAction configAction, String payload) {
-        AutomatedFacility state = CelestialAssetStore.findAsset(assetId) instanceof AutomatedFacility o ? o : null;
-        if (state == null) return;
-        var modules = state.modules();
-        if (moduleIndex < 0 || moduleIndex >= modules.size()) return;
-        ModuleInstance module = modules.get(moduleIndex);
-        if (!(module.component() instanceof ModuleMiner miner)) return;
-        switch (configAction) {
-            case ADD_MINER_BLACKLIST -> miner.addToBlacklist(payload);
-            case REMOVE_MINER_BLACKLIST -> miner.removeFromBlacklist(payload);
-        }
-        Galaxia.GALAXIA_NETWORK
-            .sendToServer(AssetModuleUpdatePacket.config(assetId, moduleIndex, module.id, configAction, payload));
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.config(assetId, moduleIndex, module.id, configAction, payload));
     }
 
     public static void updateModuleConfig(ID assetId, int moduleIndex, ConfigAction configAction, boolean payload) {
-        AutomatedFacility state = CelestialAssetStore.findAsset(assetId) instanceof AutomatedFacility o ? o : null;
-        if (state == null) return;
-        var modules = state.modules();
-        if (moduleIndex < 0 || moduleIndex >= modules.size()) return;
-        ModuleInstance module = modules.get(moduleIndex);
-        switch (configAction) {
-            case SET_MINER_COPY_SETTINGS -> {
-                if (module.component() instanceof ModuleMiner miner) {
-                    miner.setCopySettingToOtherMiners(payload);
-                }
-            }
-            case SET_PLANETARY_HANDLING -> {
-                if (module.component() instanceof ModuleHammer hammer) {
-                    hammer.setPlanetaryHandling(payload);
-                }
-            }
-            default -> {}
-        }
-        Galaxia.GALAXIA_NETWORK
-            .sendToServer(AssetModuleUpdatePacket.config(assetId, moduleIndex, module.id, configAction, payload));
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.config(assetId, moduleIndex, module.id, configAction, payload));
     }
 
     public static void updateModuleConfig(ID assetId, int moduleIndex, ConfigAction configAction, double payload) {
-        AutomatedFacility state = CelestialAssetStore.findAsset(assetId) instanceof AutomatedFacility o ? o : null;
-        if (state == null) return;
-        var modules = state.modules();
-        if (moduleIndex < 0 || moduleIndex >= modules.size()) return;
-        ModuleInstance module = modules.get(moduleIndex);
-        switch (configAction) {
-            case SET_ALLOW_SHOOTING_THRESHOLD -> {
-                if (module.component() instanceof ModuleHammer hammer) {
-                    hammer.setConfig(
-                        new AllowShootingConfig(
-                            hammer.config()
-                                .mode(),
-                            payload));
-                }
-            }
-            default -> {}
-        }
-        Galaxia.GALAXIA_NETWORK
-            .sendToServer(AssetModuleUpdatePacket.config(assetId, moduleIndex, module.id, configAction, payload));
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.config(assetId, moduleIndex, module.id, configAction, payload));
     }
 
     public static <T extends Enum<T>> void updateModuleConfig(ID assetId, int moduleIndex, ConfigAction configAction,
         T payload) {
-        AutomatedFacility state = CelestialAssetStore.findAsset(assetId) instanceof AutomatedFacility o ? o : null;
-        if (state == null) return;
-        var modules = state.modules();
-        if (moduleIndex < 0 || moduleIndex >= modules.size()) return;
-        ModuleInstance module = modules.get(moduleIndex);
-        if (!(module.component() instanceof ModuleHammer hammer)) return;
-
-        switch (configAction) {
-            case SET_ALLOW_SHOOTING_MODE -> {
-                AllowShootingConfig.Mode mode = (AllowShootingConfig.Mode) payload;
-                hammer.setConfig(
-                    new AllowShootingConfig(
-                        mode,
-                        hammer.config()
-                            .threshold()));
-            }
-            case SET_ROUTE_PRIORITY -> {
-                OrbitalTransferPlanner.RoutePriority priority = (OrbitalTransferPlanner.RoutePriority) payload;
-                hammer.setRoutePriority(priority);
-            }
-            default -> {}
-        }
-        Galaxia.GALAXIA_NETWORK
-            .sendToServer(AssetModuleUpdatePacket.config(assetId, moduleIndex, module.id, configAction, payload));
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.config(assetId, moduleIndex, module.id, configAction, payload));
     }
 
-    /**
-     * Replaces the client signal maps and bumps the signal revision counter.
-     * Client-side only.
-     */
+    public static void updateModuleRecipeSlot(ID assetId, int moduleIndex, ConfigAction configAction, byte slotIndex,
+        SavedRecipe slot) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket
+                .recipeSlotPayload(assetId, moduleIndex, module.id, configAction, slotIndex, slot));
+    }
+
+    public static void updateInventoryBound(ID assetId, int moduleIndex, ConfigAction configAction, BoundKind kind,
+        InventoryKey resource, long amount) {
+        updateInventoryBound(assetId, configAction, kind, resource, amount);
+    }
+
+    public static void updateInventoryBound(ID assetId, ConfigAction configAction, BoundKind kind,
+        InventoryKey resource, long amount) {
+        AssetInventoryUpdatePacket packet = configAction == ConfigAction.CLEAR_INVENTORY_BOUND
+            ? AssetInventoryUpdatePacket.clearBound(assetId, kind, resource)
+            : AssetInventoryUpdatePacket.setBound(assetId, kind, resource, amount);
+        StarmapActionSyncHandler.sendInventoryUpdate(packet);
+    }
+
+    public static void updateMinerOreBlacklisted(ID assetId, int moduleIndex, String oreKey, boolean blacklisted) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket
+                .minerOreBlacklisted(assetId, moduleIndex, module.id, oreKey, blacklisted));
+    }
+
+    public static void updateModuleSettingsGroup(ID assetId, int moduleIndex, short groupId) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.moduleSettingsGroup(assetId, moduleIndex, module.id, groupId));
+    }
+
+    public static void createModuleSettingsGroup(ID assetId, int moduleIndex) {
+        createModuleSettingsGroup(assetId, moduleIndex, "");
+    }
+
+    public static void createModuleSettingsGroup(ID assetId, int moduleIndex, String displayName) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.createModuleSettingsGroup(assetId, moduleIndex, module.id, displayName));
+    }
+
+    public static void renameModuleSettingsGroup(ID assetId, int moduleIndex, short groupId, String displayName) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket
+                .renameModuleSettingsGroup(assetId, moduleIndex, module.id, groupId, displayName));
+    }
+
+    public static void cancelModuleOperation(ID assetId, int moduleIndex) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.cancelModuleOperation(assetId, moduleIndex, module.id));
+    }
+
+    public static void planHammerUpgrade(ID assetId, int moduleIndex, HammerVariant variant, ModuleTier tier,
+        boolean reserveItems, boolean voidCompletionRefund) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket
+                .hammerUpgradePlan(assetId, moduleIndex, module.id, variant, tier, reserveItems, voidCompletionRefund));
+    }
+
+    public static void planModuleUpgradeTargets(ID assetId, int moduleIndex, ModuleTier tier,
+        @Nullable HammerVariant variant, boolean reserveItems, boolean voidCompletionRefund,
+        List<StationTileCoord> targetCoords) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.moduleUpgradeTargets(
+                assetId,
+                moduleIndex,
+                module.id,
+                tier,
+                variant,
+                reserveItems,
+                voidCompletionRefund,
+                targetCoords));
+    }
+
+    public static void planMinerFocusTier(ID assetId, int moduleIndex, MinerFocusTier focusTier) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.minerFocusTierPlan(assetId, moduleIndex, module.id, focusTier));
+    }
+
+    public static void setMinerFocusOre(ID assetId, int moduleIndex, String oreKey) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.minerFocusOre(assetId, moduleIndex, module.id, oreKey));
+    }
+
+    public static void copyModuleSettings(ID assetId, int moduleIndex, List<StationTileCoord> targetCoords) {
+        sendModuleUpdate(
+            assetId,
+            moduleIndex,
+            module -> AssetModuleUpdatePacket.copyModuleSettings(assetId, moduleIndex, module.id, targetCoords));
+    }
+
+    private static void sendModuleUpdate(ID assetId, int moduleIndex,
+        Function<ModuleInstance, AssetModuleUpdatePacket> packetFactory) {
+        ModuleInstance module = resolveModule(assetId, moduleIndex);
+        if (module == null) return;
+        AssetModuleUpdatePacket packet = packetFactory.apply(module);
+        if (packet == null) return;
+        StarmapActionSyncHandler.sendModuleUpdate(packet);
+    }
+
+    private static @Nullable ModuleInstance resolveModule(ID assetId, int moduleIndex) {
+        AutomatedFacility state = getByAssetId(assetId) instanceof AutomatedFacility o ? o : null;
+        if (state == null) return null;
+        var modules = state.modules();
+        if (moduleIndex < 0 || moduleIndex >= modules.size()) return null;
+        return modules.get(moduleIndex);
+    }
+
+    public static void addInventory(CelestialAsset.ID assetId, ItemStackWrapper resource, long amount) {
+        AssetInventoryUpdatePacket packet = AssetInventoryUpdatePacket.add(assetId, resource, amount);
+        StarmapActionSyncHandler.sendInventoryUpdate(packet);
+    }
+
+    public static void removeInventory(CelestialAsset.ID assetId, ItemStackWrapper resource) {
+        AssetInventoryUpdatePacket packet = AssetInventoryUpdatePacket.remove(assetId, resource);
+        StarmapActionSyncHandler.sendInventoryUpdate(packet);
+    }
+
+    public static void removeInventoryAmount(CelestialAsset.ID assetId, ItemStackWrapper resource, long amount) {
+        AssetInventoryUpdatePacket packet = AssetInventoryUpdatePacket.removeAmount(assetId, resource, amount);
+        StarmapActionSyncHandler.sendInventoryUpdate(packet);
+    }
+
+    public static void updateLogisticsConfig(CelestialAsset.ID assetId, ItemStackWrapper resource,
+        LogisticsResourceConfig config) {
+        updateLogisticsConfig(assetId, resource, config, LogisticsConfigAccessMode.FULL);
+    }
+
+    public static void updateLogisticsConfig(CelestialAsset.ID assetId, ItemStackWrapper resource,
+        LogisticsResourceConfig config, LogisticsConfigAccessMode accessMode) {
+        LogisticsConfigUpdatePacket packet = new LogisticsConfigUpdatePacket(assetId, resource, config, accessMode);
+        StarmapActionSyncHandler.sendLogisticsConfig(packet);
+    }
+
+    public static void removeLogisticsConfig(CelestialAsset.ID assetId, ItemStackWrapper resource) {
+        LogisticsConfigUpdatePacket packet = LogisticsConfigUpdatePacket.remove(assetId, resource);
+        StarmapActionSyncHandler.sendLogisticsConfig(packet);
+    }
+
+    // ── Filter actions ──
+
+    public static void addFilter(CelestialAsset.ID assetId, boolean isItem, String filterKey) {
+        AssetFilterUpdatePacket packet = AssetFilterUpdatePacket.addFilter(assetId, isItem, filterKey);
+        StarmapActionSyncHandler.sendFilterUpdate(packet);
+    }
+
+    public static void removeFilter(CelestialAsset.ID assetId, boolean isItem, String filterKey) {
+        AssetFilterUpdatePacket packet = AssetFilterUpdatePacket.removeFilter(assetId, isItem, filterKey);
+        StarmapActionSyncHandler.sendFilterUpdate(packet);
+    }
+
+    public static void clearFilters(CelestialAsset.ID assetId, boolean isItem) {
+        AssetFilterUpdatePacket packet = AssetFilterUpdatePacket.clearFilters(assetId, isItem);
+        StarmapActionSyncHandler.sendFilterUpdate(packet);
+    }
+
+    public static void setFilters(CelestialAsset.ID assetId, boolean isItem, List<String> filterKeys) {
+        AssetFilterUpdatePacket packet = AssetFilterUpdatePacket.setFilters(assetId, isItem, filterKeys);
+        StarmapActionSyncHandler.sendFilterUpdate(packet);
+    }
+
+    // ── Signal mirror ──
+
     public static void updateClientSignals(Map<CelestialObjectId, Map<String, Long>> bySystem,
         Map<CelestialObjectId, Map<String, Long>> byPlanet) {
         systemSignals.clear();
@@ -273,34 +401,22 @@ public final class CelestialClient {
         signalRevision++;
     }
 
-    /**
-     * Returns the aggregated net amounts (resourceKey → netAmount) for the given
-     * star system, or an empty map if none are available.
-     */
     public static Map<String, Long> clientSignalsForSystem(CelestialObjectId systemId) {
         Map<String, Long> result = systemSignals.get(systemId);
         return result != null ? Collections.unmodifiableMap(result) : Collections.emptyMap();
     }
 
-    /**
-     * Returns the aggregated net amounts (resourceKey → netAmount) for the given
-     * planetary anchor body, or an empty map if none are available.
-     */
     public static Map<String, Long> clientSignalsForPlanet(CelestialObjectId anchorBodyId) {
         Map<String, Long> result = planetSignals.get(anchorBodyId);
         return result != null ? Collections.unmodifiableMap(result) : Collections.emptyMap();
     }
 
-    /** Monotonically incrementing counter; bumped each time signal data is replaced. */
     public static int clientSignalRevision() {
         return signalRevision;
     }
 
-    // -------------------------------------------------------------------------
-    // Client-side task snapshot (populated by LogisticsTasksSyncPacket)
-    // -------------------------------------------------------------------------
+    // ── Delivery mirror ──
 
-    /** Replaces the client delivery list and bumps the revision counter. Client-side only. */
     public static void updateClientDeliveries(List<LogisticsDelivery> newDeliveries) {
         deliveries.clear();
         newDeliveries.stream()
@@ -309,15 +425,27 @@ public final class CelestialClient {
         deliveryRevision++;
     }
 
-    /** Returns an unmodifiable view of the latest client delivery snapshot. */
     public static List<LogisticsDelivery> clientDeliveries() {
         return Collections.unmodifiableList(deliveries);
     }
 
-    /** Monotonically incrementing counter; bumped each time deliveries are replaced. */
     public static int clientDeliveryRevision() {
         return deliveryRevision;
     }
+
+    public static void updateHammerTrajectoryLoad(HammerTrajectoryLoadSample sample) {
+        hammerTrajectoryLoadSample = sample == null ? new HammerTrajectoryLoadSample(0.0, 0.0) : sample;
+    }
+
+    public static HammerTrajectoryLoadSample hammerTrajectoryLoadSample() {
+        return hammerTrajectoryLoadSample;
+    }
+
+    public static List<CelestialAsset> listAssetsInSystem(CelestialObjectId systemId) {
+        return CelestialAssetStore.CLIENT.listAssetsInSystemInternal(systemId, GTTeamsCompat.getTeam());
+    }
+
+    // ── Helpers ──
 
     private static void collectTransferTargets(CelestialObject current, List<TransferTarget> targets) {
         List<CelestialAsset> state = getState(current.id());

@@ -1,5 +1,8 @@
 package com.gtnewhorizons.galaxia.core;
 
+import static com.gtnewhorizons.galaxia.api.GalaxiaAPI.FMLBusRegister;
+import static com.gtnewhorizons.galaxia.api.GalaxiaAPI.ForgeBusRegister;
+import static com.gtnewhorizons.galaxia.api.GalaxiaAPI.isGregTechLoaded;
 import static com.gtnewhorizons.galaxia.registry.items.baubles.ItemOxygenMask.BAUBLE_TYPE_OXYGEN_MASK;
 import static com.gtnewhorizons.galaxia.registry.items.baubles.ItemOxygenTank.BAUBLE_TYPE_OXYGEN_TANK;
 import static com.gtnewhorizons.galaxia.registry.items.baubles.ItemProtectionShield.BAUBLE_TYPE_PROTECTION_SHIELD;
@@ -8,25 +11,31 @@ import static com.gtnewhorizons.galaxia.registry.items.baubles.ItemSporeFilter.B
 import static com.gtnewhorizons.galaxia.registry.items.baubles.ItemThermalProtection.BAUBLE_TYPE_THERMAL_PROTECTION;
 import static com.gtnewhorizons.galaxia.registry.items.baubles.ItemWitherProtection.BAUBLE_TYPE_WITHER_PROTECTION;
 
-import net.minecraftforge.common.MinecraftForge;
-
+import com.gtnewhorizon.gtnhlib.teams.TeamDataRegistry;
+import com.gtnewhorizons.galaxia.client.gui.TeamPermissionScreen;
+import com.gtnewhorizons.galaxia.client.gui.mui.ItemPickerScreen;
+import com.gtnewhorizons.galaxia.client.gui.station.ModulePickerScreen;
+import com.gtnewhorizons.galaxia.client.gui.station.StationManagementScreen;
+import com.gtnewhorizons.galaxia.compat.teams.GalaxiaTeamData;
 import com.gtnewhorizons.galaxia.core.network.ServerTickTaskQueue;
 import com.gtnewhorizons.galaxia.core.persistence.FacilityPersistenceManager;
 import com.gtnewhorizons.galaxia.handlers.CelestialEventHandler;
 import com.gtnewhorizons.galaxia.handlers.DimensionEventHandler;
+import com.gtnewhorizons.galaxia.handlers.TeamEventHandler;
+import com.gtnewhorizons.galaxia.handlers.TetherEventHandler;
 import com.gtnewhorizons.galaxia.registry.block.GalaxiaBlocksEnum;
 import com.gtnewhorizons.galaxia.registry.block.PlanetBlocks;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialRegistry;
 import com.gtnewhorizons.galaxia.registry.dimension.SolarSystemRegistry;
 import com.gtnewhorizons.galaxia.registry.effects.GalaxiaEffects;
 import com.gtnewhorizons.galaxia.registry.items.GalaxiaItemList;
+import com.gtnewhorizons.galaxia.registry.outpost.module.FacilityModuleKind;
 import com.gtnewhorizons.galaxia.registry.outpost.module.FacilityModuleRegistry;
-import com.gtnewhorizons.galaxia.registry.rocketmodules.rocket.ModuleRegistry;
+import com.gtnewhorizons.galaxia.registry.rocketmodules.rocket.blueprint.RocketPartRegistry;
 import com.gtnewhorizons.galaxia.registry.rocketmodules.rocket.entities.EntityRocket;
 import com.gtnewhorizons.galaxia.registry.rocketmodules.rocket.entities.EntityRocketSeat;
 
 import baubles.api.expanded.BaubleExpandedSlots;
-import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Loader;
 import cpw.mods.fml.common.event.FMLInitializationEvent;
 import cpw.mods.fml.common.event.FMLPostInitializationEvent;
@@ -42,36 +51,47 @@ public class CommonProxy {
     public void preInit(FMLPreInitializationEvent event) {
         SolarSystemRegistry.registerAll();
 
-        FMLCommonHandler.instance()
-            .bus()
-            .register(new DimensionEventHandler());
+        // FML bus registering
+        FMLBusRegister(new DimensionEventHandler());
+        FMLBusRegister(new CelestialEventHandler());
+        FMLBusRegister(new ServerTickTaskQueue());
+        FMLBusRegister(new TetherEventHandler());
 
-        FMLCommonHandler.instance()
-            .bus()
-            .register(new ServerTickTaskQueue());
+        // Forge bus registering
+        ForgeBusRegister(new FacilityPersistenceManager());
+        ForgeBusRegister(new TeamEventHandler());
 
-        FacilityPersistenceManager outpostPersistence = new FacilityPersistenceManager();
-        MinecraftForge.EVENT_BUS.register(outpostPersistence);
-        FMLCommonHandler.instance()
-            .bus()
-            .register(new CelestialEventHandler());
+        // GTNH Teams custom data
+        TeamDataRegistry.register(GalaxiaTeamData.ID, GalaxiaTeamData::new);
 
+        // Registration
         GalaxiaItemList.registerAll();
         GalaxiaBlocksEnum.registerBlocks();
         PlanetBlocks.init();
         GalaxiaEffects.init();
+
+        // Facility setup
+        FacilityModuleKind.setGt5Available(isGregTechLoaded());
         FacilityModuleRegistry.init();
 
         if (Loader.isModLoaded("Baubles|Expanded")) registerBaublesSlots();
 
-        ModuleRegistry.registerAllModules();
+        RocketPartRegistry.instance()
+            .registerAll();
     }
 
     // load "Do your mod setup. Build whatever data structures you care about.
     // Register recipes." (Remove if not needed)
     public void init(FMLInitializationEvent event) {
+        NetworkManager.registerPackets();
         EntityRegistry.registerModEntity(EntityRocket.class, "RocketEntity", 0, Galaxia.instance, 64, 1, false);
         EntityRegistry.registerModEntity(EntityRocketSeat.class, "RocketSeat", 1, Galaxia.instance, 64, 1, false);
+
+        // Why Gui code on server? idk ask mui2
+        ItemPickerScreen.FACTORY.init();
+        ModulePickerScreen.FACTORY.init();
+        StationManagementScreen.FACTORY.init();
+        TeamPermissionScreen.FACTORY.init();
     }
 
     // postInit "Handle interaction with other mods, complete your setup based on
@@ -83,8 +103,7 @@ public class CommonProxy {
         Galaxia.sporeFilterSlots = BaubleExpandedSlots.getIndexesOfAssignedSlotsOfType(BAUBLE_TYPE_SPORE_FILTER);
         Galaxia.thermalSlot = BaubleExpandedSlots.getIndexesOfAssignedSlotsOfType(BAUBLE_TYPE_THERMAL_PROTECTION);
         Galaxia.witherSlots = BaubleExpandedSlots.getIndexesOfAssignedSlotsOfType(BAUBLE_TYPE_WITHER_PROTECTION);
-        Galaxia.reactionControlSystemSlot = BaubleExpandedSlots
-            .getIndexesOfAssignedSlotsOfType(BAUBLE_TYPE_REACTION_CONTROL_SYSTEM);
+        Galaxia.rcsSlot = BaubleExpandedSlots.getIndexesOfAssignedSlotsOfType(BAUBLE_TYPE_REACTION_CONTROL_SYSTEM);
 
         CelestialRegistry.freezeAndBake();
     }

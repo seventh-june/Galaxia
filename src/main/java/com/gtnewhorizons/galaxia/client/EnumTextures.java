@@ -4,6 +4,9 @@ import static com.gtnewhorizons.galaxia.api.GalaxiaAPI.LocationGalaxia;
 
 import net.minecraft.util.ResourceLocation;
 
+import com.cleanroommc.modularui.drawable.UITexture;
+import com.gtnewhorizons.galaxia.core.Galaxia;
+
 public enum EnumTextures {
 
     // Gui
@@ -19,13 +22,13 @@ public enum EnumTextures {
     ATARAXIA("textures/environment/ataraxia.png"),
     EDIACARA("textures/environment/ediacara.png"),
     EGORA("textures/environment/egora.png"),
-    HEMATERIA("textures/environment/hemateria.png"),
+    MARS("textures/environment/mars.png"),
     MIRAGE("textures/environment/mirage.png"),
     MYKELIA("textures/environment/mykelia.png"),
     PERIHELIA("textures/environment/perihelia.png"),
     PLEURA("textures/environment/pleura.png"),
     TENEBRAE("textures/environment/tenebrae.png"),
-    VIRIDIS("textures/environment/viridis.png"),
+    OVERWORLD("textures/environment/overworld.png"),
 
     SELECTION_FRAME("textures/gui/selection_frame.png"),
     HAZARD_COLD("textures/gui/icon_cold.png"),
@@ -38,12 +41,12 @@ public enum EnumTextures {
     ICON_ATARAXIA("textures/gui/bodyicons/icon_ataraxia.png"),
     ICON_EDIACARA("textures/gui/bodyicons/icon_ediacara.png"),
     ICON_EGORA("textures/gui/bodyicons/icon_egora.png"),
-    ICON_HEMATERIA("textures/gui/bodyicons/icon_hemateria.png"),
+    ICON_MARS("textures/gui/bodyicons/icon_mars.png"),
     ICON_MYKELIA("textures/gui/bodyicons/icon_mykelia.png"),
     ICON_PLEURA("textures/gui/bodyicons/icon_pleura.png"),
     ICON_TENEBRAE("textures/gui/bodyicons/icon_tenebrae.png"),
-    ICON_THEIA("textures/gui/bodyicons/icon_theia.png"),
-    ICON_VIRIDIS("textures/gui/bodyicons/icon_viridis.png"),
+    ICON_MOON("textures/gui/bodyicons/icon_moon.png"),
+    ICON_OVERWORLD("textures/gui/bodyicons/icon_overworld.png"),
 
     // Space Object Icons for Galactic map
     ICON_STATION("textures/gui/bodyicons/station.png"),
@@ -57,6 +60,10 @@ public enum EnumTextures {
     ICON_CAP_DECONSTRUCTION("textures/gui/outpost_destroying.png"),
     ICON_WARN_POWERFAIL("textures/gui/outpost_powerfail.png"),
     ICON_WARN_GENERIC("textures/gui/outpost_warning.png"),
+    ICON_STATION_CORE_DIRECTION("textures/gui/station/core_direction_arrow.png"),
+    ICON_STATION_ALERT_WARNING("textures/gui/station/alert_warning.png"),
+    ICON_STATION_ALERT_ERROR("textures/gui/station/alert_error.png"),
+    ICON_STATION_ITEM_INTERACTIONS("textures/gui/station/item_interactions.png"),
     ICON_MISSING("textures/gui/asset_panel/missing.png"),
     ICON_TRANSFER_HAMMER("textures/items/module/item_hammer_package.png"),
 
@@ -64,12 +71,18 @@ public enum EnumTextures {
     ; // leave trailing semicolon
 
     private final ResourceLocation texture;
+    private final UITexture uiTexture;
 
     EnumTextures(String location) {
         this.texture = LocationGalaxia(location);
+        this.uiTexture = UITexture.fullImage(Galaxia.MODID, location);
     }
 
     public ResourceLocation get() {
         return texture;
+    }
+
+    public UITexture getImage() {
+        return uiTexture;
     }
 }

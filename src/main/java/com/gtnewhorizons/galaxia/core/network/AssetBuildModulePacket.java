@@ -1,21 +1,25 @@
 package com.gtnewhorizons.galaxia.core.network;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+
 import net.minecraft.entity.player.EntityPlayerMP;
 
-import com.gtnewhorizons.galaxia.compat.TempTeamCompat;
-import com.gtnewhorizons.galaxia.core.Galaxia;
+import com.gtnewhorizons.galaxia.compat.teams.GTTeamsCompat;
+import com.gtnewhorizons.galaxia.compat.teams.TeamAction;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialAsset;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialAssetStore;
 import com.gtnewhorizons.galaxia.registry.outpost.AutomatedFacility;
+import com.gtnewhorizons.galaxia.registry.outpost.feature.PlanetaryFeatureKey;
 import com.gtnewhorizons.galaxia.registry.outpost.module.FacilityModuleKind;
 import com.gtnewhorizons.galaxia.registry.outpost.module.ModuleInstance;
 import com.gtnewhorizons.galaxia.registry.outpost.module.ModuleTier;
-import com.gtnewhorizons.galaxia.registry.outpost.station.ModuleFootprint;
 import com.gtnewhorizons.galaxia.registry.outpost.station.ModuleShape;
 import com.gtnewhorizons.galaxia.registry.outpost.station.MutationKind;
 import com.gtnewhorizons.galaxia.registry.outpost.station.PlacedTile;
-import com.gtnewhorizons.galaxia.registry.outpost.station.ShapeValidation;
-import com.gtnewhorizons.galaxia.registry.outpost.station.StationPlacementValidator;
 import com.gtnewhorizons.galaxia.registry.outpost.station.StationTileCoord;
 import com.gtnewhorizons.galaxia.registry.outpost.station.StationTileState;
 
@@ -26,23 +30,35 @@ import io.netty.buffer.ByteBuf;
 
 public final class AssetBuildModulePacket implements IMessage {
 
+    private static final int MAX_BUILD_TARGETS = 256;
+
     private CelestialAsset.ID assetId;
     private FacilityModuleKind moduleKind;
     private ModuleShape shape;
     private ModuleTier tier;
     private boolean instantBuild;
-    private StationTileCoord tileCoord;
+    private List<StationTileCoord> tileCoords;
 
     public AssetBuildModulePacket() {}
 
-    public AssetBuildModulePacket(CelestialAsset.ID assetId, FacilityModuleKind kind, ModuleShape shape,
+    public static AssetBuildModulePacket create(CelestialAsset.ID assetId, FacilityModuleKind kind, ModuleShape shape,
         ModuleTier tier, boolean instantBuild, StationTileCoord tileCoord) {
-        this.assetId = assetId;
-        this.moduleKind = kind;
-        this.shape = shape;
-        this.tier = tier;
-        this.instantBuild = instantBuild;
-        this.tileCoord = tileCoord;
+        return createMany(assetId, kind, shape, tier, instantBuild, tileCoord == null ? null : List.of(tileCoord));
+    }
+
+    public static AssetBuildModulePacket createMany(CelestialAsset.ID assetId, FacilityModuleKind kind,
+        ModuleShape shape, ModuleTier tier, boolean instantBuild, List<StationTileCoord> tileCoords) {
+        if (tileCoords != null && tileCoords.size() > MAX_BUILD_TARGETS) {
+            throw new IllegalArgumentException("too many module build targets: " + tileCoords.size());
+        }
+        AssetBuildModulePacket pkt = new AssetBuildModulePacket();
+        pkt.assetId = assetId;
+        pkt.moduleKind = kind;
+        pkt.shape = shape;
+        pkt.tier = tier;
+        pkt.instantBuild = instantBuild;
+        pkt.tileCoords = tileCoords == null ? null : List.copyOf(tileCoords);
+        return pkt;
     }
 
     @Override
@@ -52,9 +68,14 @@ public final class AssetBuildModulePacket implements IMessage {
         PacketUtil.writeEnum(buf, shape);
         PacketUtil.writeEnum(buf, tier);
         buf.writeBoolean(instantBuild);
-        boolean hasTile = tileCoord != null;
-        buf.writeBoolean(hasTile);
-        if (hasTile) PacketUtil.writeStationTileCoord(buf, tileCoord);
+        if (tileCoords == null) {
+            buf.writeInt(-1);
+            return;
+        }
+        buf.writeInt(tileCoords.size());
+        for (StationTileCoord coord : tileCoords) {
+            PacketUtil.writeStationTileCoord(buf, coord);
+        }
     }
 
     @Override
@@ -64,133 +85,139 @@ public final class AssetBuildModulePacket implements IMessage {
         shape = PacketUtil.readEnum(buf, ModuleShape.class);
         tier = PacketUtil.readEnum(buf, ModuleTier.class);
         instantBuild = buf.readBoolean();
-        tileCoord = buf.readBoolean() ? PacketUtil.readStationTileCoord(buf) : null;
+        int targetCount = buf.readInt();
+        if (targetCount < 0) {
+            tileCoords = null;
+        } else {
+            if (targetCount > MAX_BUILD_TARGETS) {
+                throw new IllegalArgumentException("too many module build targets: " + targetCount);
+            }
+            tileCoords = new ArrayList<>(targetCount);
+            for (int i = 0; i < targetCount; i++) {
+                tileCoords.add(PacketUtil.readStationTileCoord(buf));
+            }
+        }
     }
 
-    public static final class Handler implements IMessageHandler<AssetBuildModulePacket, IMessage> {
+    public static class Handler implements IMessageHandler<AssetBuildModulePacket, IMessage> {
 
         @Override
-        public IMessage onMessage(AssetBuildModulePacket packet, MessageContext ctx) {
+        public IMessage onMessage(AssetBuildModulePacket message, MessageContext ctx) {
             EntityPlayerMP player = ctx.getServerHandler().playerEntity;
-            if (player == null) return null;
+            if (!GTTeamsCompat.hasPermission(player, TeamAction.BUILD_MODULE)) return null;
+            UUID teamId = GTTeamsCompat.getTeam(player);
+            boolean creative = player.capabilities.isCreativeMode;
+            return message.apply(teamId, creative);
+        }
+    }
 
-            CelestialAsset asset = CelestialAssetStore.findAsset(packet.assetId);
-            if (asset == null) {
-                Galaxia.LOG.warn(
-                    "[Outpost] BuildModule: missing asset {} for player {}",
-                    packet.assetId,
-                    player.getGameProfile()
-                        .getName());
-                return null;
-            }
-            if (!(asset instanceof AutomatedFacility state)) {
-                Galaxia.LOG.warn(
-                    "[Outpost] BuildModule: asset {} is not an automated facility for player {}",
-                    packet.assetId,
-                    player.getGameProfile()
-                        .getName());
-                return null;
-            }
-            if (!CelestialAssetStore.isOwnedBy(TempTeamCompat.getTeam(player), packet.assetId)) {
-                Galaxia.LOG.warn(
-                    "[Outpost] BuildModule: unauthorized access to asset {} by player {}",
-                    packet.assetId,
-                    player.getGameProfile()
-                        .getName());
-                return null;
-            }
+    public AssetSyncPacket apply(UUID teamId, boolean creativePlayer) {
+        if (teamId == null || assetId == null || moduleKind == null || shape == null || tier == null) {
+            return null;
+        }
 
-            FacilityModuleKind kind = packet.moduleKind;
-            if (!kind.isAllowedOn(asset.kind)) {
-                Galaxia.LOG.warn(
-                    "[Outpost] BuildModule: rejected {} on {} ({}) from player {}",
-                    kind,
-                    packet.assetId,
-                    asset.kind,
-                    player.getGameProfile()
-                        .getName());
-                return null;
-            }
+        CelestialAsset asset = CelestialAssetStore.findAsset(assetId);
+        if (asset == null) return null;
 
-            if (!kind.allowedTiers()
-                .contains(packet.tier)) {
-                Galaxia.LOG.warn(
-                    "[Outpost] BuildModule: rejected tier {} for {} on {} from player {}",
-                    packet.tier,
-                    kind,
-                    packet.assetId,
-                    player.getGameProfile()
-                        .getName());
-                return null;
-            }
+        if (!CelestialAssetStore.isOwnedBy(teamId, assetId)) {
+            return null;
+        }
 
-            StationTileCoord anchor = packet.tileCoord;
-            if (anchor != null) {
-                if (!state.hasStationLayout()) {
-                    Galaxia.LOG.warn(
-                        "[Outpost] BuildModule: tile placement requested on facility without layout {} from player {}",
-                        packet.assetId,
-                        player.getGameProfile()
-                            .getName());
-                    return null;
-                }
-                StationPlacementValidator.Result placementResult = StationPlacementValidator
-                    .validate(state.stationLayout(), anchor);
-                if (placementResult != StationPlacementValidator.Result.OK) {
-                    Galaxia.LOG.warn(
-                        "[Outpost] BuildModule: rejected placement at {} on {} ({}) from player {}",
-                        anchor,
-                        packet.assetId,
-                        placementResult,
-                        player.getGameProfile()
-                            .getName());
-                    return null;
-                }
-                if (packet.shape != ModuleShape.SINGLE) {
-                    ShapeValidation footprintResult = ModuleFootprint
-                        .validate(state.stationLayout(), anchor, packet.shape);
-                    if (footprintResult != ShapeValidation.OK) {
-                        Galaxia.LOG.warn(
-                            "[Outpost] BuildModule: rejected multi-tile footprint at {} shape {} on {} ({}) from player {}",
-                            anchor,
-                            packet.shape,
-                            packet.assetId,
-                            footprintResult,
-                            player.getGameProfile()
-                                .getName());
-                        return null;
-                    }
-                }
-            }
+        if (!(asset instanceof AutomatedFacility facility)) {
+            return null;
+        }
 
-            ModuleInstance module = kind
-                .create(anchor != null ? anchor : StationTileCoord.CORE, packet.shape, packet.tier);
-            if (packet.instantBuild && player.capabilities.isCreativeMode) {
-                module.completeConstruction();
-            }
-            state.addModule(module);
-            state.layoutCache()
-                .applyMutation(MutationKind.PLACE, kind);
+        if (!moduleKind.isAllowedOn(asset.kind)) {
+            return null;
+        }
 
-            if (anchor != null && state.hasStationLayout()) {
+        if (!moduleKind.allowedTiers()
+            .contains(tier)) {
+            return null;
+        }
+        if (shape != moduleKind.defaultShape()) {
+            return null;
+        }
+
+        List<StationTileCoord> anchors = tileCoords;
+        if (anchors == null) {
+            anchors = List.of(StationTileCoord.CORE);
+        }
+        if (anchors.isEmpty()) return null;
+        if (anchors.stream()
+            .anyMatch(coord -> coord == null)) {
+            return null;
+        }
+        if (!validateAllTargets(facility, anchors, moduleKind)) {
+            return null;
+        }
+
+        boolean shouldInstantBuild = instantBuild && creativePlayer;
+        for (StationTileCoord anchor : anchors) {
+            ModuleInstance module = moduleKind.create(anchor, shape, tier);
+            if (shouldInstantBuild) module.completeConstruction();
+
+            facility.addModule(module);
+            facility.layoutCache()
+                .applyMutation(MutationKind.PLACE, moduleKind, module);
+
+            if (facility.hasStationLayout() && module.anchorOrNull() != null) {
                 StationTileState initialState = StationTileState.fromModuleStatus(module.status());
                 for (StationTileCoord coord : module.shape()
                     .tiles(module.anchor())) {
-                    state.stationLayout()
+                    facility.stationLayout()
                         .place(coord, new PlacedTile(module, initialState));
                 }
             }
-
-            Galaxia.LOG.debug(
-                "[Outpost] BuildModule: queued {} construction on outpost {} (by {})",
-                kind.getDisplayName(),
-                packet.assetId,
-                player.getGameProfile()
-                    .getName());
-
-            int moduleIndex = state.modules()
-                .size() - 1;
-            return AssetSyncPacket.moduleAdded(packet.assetId, moduleIndex, module);
         }
+
+        return AssetSyncPacket.fullSync(facility);
+    }
+
+    private boolean validateAllTargets(AutomatedFacility facility, List<StationTileCoord> anchors,
+        FacilityModuleKind moduleKind) {
+        if (anchors.size() == 1 && StationTileCoord.CORE.equals(anchors.get(0)) && !facility.hasStationLayout()) {
+            return true;
+        }
+        if (!facility.hasStationLayout()) return false;
+        PlanetaryFeatureKey requiredAnchorFeature = moduleKind.requiredAnchorFeature();
+        Set<StationTileCoord> plannedTiles = new HashSet<>();
+        Set<StationTileCoord> originalTiles = facility.stationLayout()
+            .snapshot()
+            .keySet();
+        for (StationTileCoord anchor : anchors) {
+            if (!shape.fitsAt(anchor)) return false;
+            if (requiredAnchorFeature != null && !facility.planetaryFeaturesAt(anchor)
+                .contains(requiredAnchorFeature)) {
+                return false;
+            }
+            StationTileCoord[] footprint = shape.tiles(anchor);
+            boolean hasAdjacent = false;
+            for (StationTileCoord coord : footprint) {
+                if (originalTiles.contains(coord) || plannedTiles.contains(coord)) return false;
+                if (!hasAdjacent && hasKnownOccupiedNeighbour(originalTiles, plannedTiles, coord)) hasAdjacent = true;
+            }
+            if (!hasAdjacent) return false;
+            for (StationTileCoord coord : footprint) {
+                plannedTiles.add(coord);
+            }
+        }
+        return true;
+    }
+
+    private static boolean hasKnownOccupiedNeighbour(Set<StationTileCoord> originalTiles,
+        Set<StationTileCoord> plannedTiles, StationTileCoord coord) {
+        return containsKnown(originalTiles, plannedTiles, coord.dx() - 1, coord.dy())
+            || containsKnown(originalTiles, plannedTiles, coord.dx() + 1, coord.dy())
+            || containsKnown(originalTiles, plannedTiles, coord.dx(), coord.dy() - 1)
+            || containsKnown(originalTiles, plannedTiles, coord.dx(), coord.dy() + 1);
+    }
+
+    private static boolean containsKnown(Set<StationTileCoord> originalTiles, Set<StationTileCoord> plannedTiles,
+        int dx, int dy) {
+        if (dx < StationTileCoord.MIN || dx > StationTileCoord.MAX) return false;
+        if (dy < StationTileCoord.MIN || dy > StationTileCoord.MAX) return false;
+        StationTileCoord coord = StationTileCoord.of(dx, dy);
+        return originalTiles.contains(coord) || plannedTiles.contains(coord);
     }
 }

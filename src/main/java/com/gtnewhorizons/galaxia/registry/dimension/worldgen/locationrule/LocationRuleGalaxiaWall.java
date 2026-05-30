@@ -5,6 +5,7 @@ import java.util.Random;
 import net.minecraft.block.Block;
 import net.minecraft.world.World;
 
+import com.gtnewhorizons.galaxia.registry.dimension.worldgen.feature.ChunkBoundedAccess;
 import com.gtnewhorizons.galaxia.registry.dimension.worldgen.feature.Feature;
 
 /**
@@ -36,7 +37,7 @@ public class LocationRuleGalaxiaWall extends LocationRuleGalaxiaBase {
         if (random.nextInt(rarity) > 0) {
             return true;
         }
-        net.minecraft.block.Block surfaceBlock = world.getBlock(x, y, z);
+        Block surfaceBlock = ChunkBoundedAccess.getBlock(world, x, y, z);
         for (Block surfaceRequirement : wallRequirements) {
             if (surfaceBlock == surfaceRequirement) {
                 return false;
@@ -51,7 +52,6 @@ public class LocationRuleGalaxiaWall extends LocationRuleGalaxiaBase {
             return false;
         }
         feature.generateFeature(world, random, x, y, z, wallRequirements);
-        feature.finishGeneration();
         return true;
     }
 

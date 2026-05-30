@@ -1,13 +1,20 @@
 package com.gtnewhorizons.galaxia.core.network;
 
+import java.util.UUID;
+
 import net.minecraft.entity.player.EntityPlayerMP;
 
-import com.gtnewhorizons.galaxia.core.Galaxia;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import com.gtnewhorizons.galaxia.compat.teams.GTTeamsCompat;
+import com.gtnewhorizons.galaxia.compat.teams.TeamAction;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialAsset;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialAssetStore;
-import com.gtnewhorizons.galaxia.registry.outpost.AutomatedFacility;
-import com.gtnewhorizons.galaxia.registry.outpost.ItemStackWrapper;
+import com.gtnewhorizons.galaxia.registry.outpost.InventoryKey;
 import com.gtnewhorizons.galaxia.registry.outpost.LogisticsResourceConfig;
+import com.gtnewhorizons.galaxia.registry.outpost.logistics.LogisticStore;
+import com.gtnewhorizons.galaxia.registry.outpost.logistics.LogisticsConfigAccessMode;
 
 import cpw.mods.fml.common.network.simpleimpl.IMessage;
 import cpw.mods.fml.common.network.simpleimpl.IMessageHandler;
@@ -24,113 +31,129 @@ import io.netty.buffer.ByteBuf;
  */
 public final class LogisticsConfigUpdatePacket implements IMessage {
 
+    private static final Logger LOG = LogManager.getLogger("Galaxia");
+
     private CelestialAsset.ID assetId;
-    private String resourceKey;
+    private InventoryKey resource;
     private int minReserve;
     private int orderSize;
     private boolean isImportEnabled;
     private boolean isSupplyEnabled;
     private boolean removeEntry;
+    private LogisticsConfigAccessMode accessMode = LogisticsConfigAccessMode.FULL;
 
     public LogisticsConfigUpdatePacket() {}
 
-    public LogisticsConfigUpdatePacket(CelestialAsset.ID assetId, ItemStackWrapper resource,
+    public LogisticsConfigUpdatePacket(CelestialAsset.ID assetId, InventoryKey resource,
         LogisticsResourceConfig config) {
-        this.assetId = assetId;
-        this.resourceKey = resource.toKey();
-        this.minReserve = config.minReserve();
-        this.orderSize = config.orderSize();
-        this.isImportEnabled = config.isImportEnabled();
-        this.isSupplyEnabled = config.isSupplyEnabled();
-        this.removeEntry = false;
+        this(assetId, resource, config, LogisticsConfigAccessMode.FULL);
     }
 
-    public static LogisticsConfigUpdatePacket remove(CelestialAsset.ID assetId, ItemStackWrapper resource) {
+    public LogisticsConfigUpdatePacket(CelestialAsset.ID assetId, InventoryKey resource, LogisticsResourceConfig config,
+        LogisticsConfigAccessMode accessMode) {
+        this.assetId = assetId;
+        this.resource = resource;
+        LogisticsConfigAccessMode mode = accessMode == null ? LogisticsConfigAccessMode.FULL : accessMode;
+        LogisticsResourceConfig sanitized = mode.sanitize(config);
+        this.minReserve = sanitized.minReserve();
+        this.orderSize = sanitized.orderSize();
+        this.isImportEnabled = sanitized.isImportEnabled();
+        this.isSupplyEnabled = sanitized.isSupplyEnabled();
+        this.removeEntry = false;
+        this.accessMode = mode;
+    }
+
+    public static LogisticsConfigUpdatePacket remove(CelestialAsset.ID assetId, InventoryKey resource) {
         LogisticsConfigUpdatePacket packet = new LogisticsConfigUpdatePacket();
         packet.assetId = assetId;
-        packet.resourceKey = resource.toKey();
+        packet.resource = resource;
         packet.minReserve = 0;
         packet.orderSize = 1;
         packet.isImportEnabled = false;
         packet.isSupplyEnabled = false;
         packet.removeEntry = true;
+        packet.accessMode = LogisticsConfigAccessMode.FULL;
         return packet;
     }
 
     @Override
     public void toBytes(ByteBuf buf) {
         PacketUtil.writeId(buf, assetId);
-        PacketUtil.writeString(buf, resourceKey);
+        PacketUtil.writeInventoryKey(buf, resource);
         buf.writeInt(minReserve);
         buf.writeInt(orderSize);
         buf.writeBoolean(isImportEnabled);
         buf.writeBoolean(isSupplyEnabled);
         buf.writeBoolean(removeEntry);
+        PacketUtil.writeEnum(buf, accessMode == null ? LogisticsConfigAccessMode.FULL : accessMode);
     }
 
     @Override
     public void fromBytes(ByteBuf buf) {
         assetId = PacketUtil.readAssetId(buf);
-        resourceKey = PacketUtil.readString(buf);
+        resource = PacketUtil.readInventoryKey(buf);
         minReserve = buf.readInt();
         orderSize = buf.readInt();
         isImportEnabled = buf.readBoolean();
         isSupplyEnabled = buf.readBoolean();
         removeEntry = buf.readBoolean();
+        accessMode = PacketUtil.readEnum(buf, LogisticsConfigAccessMode.class);
     }
 
-    public static final class Handler implements IMessageHandler<LogisticsConfigUpdatePacket, IMessage> {
+    public static class Handler implements IMessageHandler<LogisticsConfigUpdatePacket, IMessage> {
 
         @Override
-        public IMessage onMessage(LogisticsConfigUpdatePacket packet, MessageContext ctx) {
+        public IMessage onMessage(LogisticsConfigUpdatePacket message, MessageContext ctx) {
             EntityPlayerMP player = ctx.getServerHandler().playerEntity;
-            if (player == null) return null;
+            if (!GTTeamsCompat.hasPermission(player, TeamAction.CONFIGURE_LOGISTICS)) return null;
+            UUID teamId = GTTeamsCompat.getTeam(player);
+            return message.apply(teamId);
+        }
+    }
 
-            // SimpleNetworkWrapper guarantees onMessage runs on the main server thread
-            // for SERVER-bound packets, so direct mutation is safe (same as DestinationSetPacket).
-            String playerName = player.getGameProfile()
-                .getName();
-            AutomatedFacility state = CelestialAssetStore.findAsset(packet.assetId) instanceof AutomatedFacility o ? o
-                : null;
-            if (state == null) {
-                Galaxia.LOG.warn(
-                    "[Logistics] LogisticsConfigUpdate: unknown assetId {} from player {}",
-                    packet.assetId,
-                    playerName);
-                return null;
-            }
+    public AssetSyncPacket apply(UUID teamId) {
+        CelestialAsset asset = CelestialAssetStore.findAsset(assetId);
+        if (asset == null || !CelestialAssetStore.isOwnedBy(teamId, assetId)) {
+            LOG.warn("[Logistics] LogisticsConfigUpdate: unknown or unauthorized assetId {}", assetId);
+            return null;
+        }
 
-            if (!packet.removeEntry && packet.orderSize <= 0) {
-                Galaxia.LOG
-                    .warn("[Logistics] LogisticsConfigUpdate rejected: orderSize must be > 0 (player {})", playerName);
-                return null;
-            }
-            if (!packet.removeEntry && packet.minReserve < 0) {
-                Galaxia.LOG.warn(
-                    "[Logistics] LogisticsConfigUpdate rejected: minReserve must be >= 0 (player {})",
-                    playerName);
-                return null;
-            }
+        if (!removeEntry && orderSize <= 0) {
+            LOG.warn("[Logistics] LogisticsConfigUpdate rejected: orderSize must be >0");
+            return null;
+        }
+        if (!removeEntry && minReserve < 0) {
+            LOG.warn("[Logistics] LogisticsConfigUpdate rejected: minReserve must be >=0");
+            return null;
+        }
 
-            ItemStackWrapper resource = ItemStackWrapper.fromKey(packet.resourceKey);
-            if (packet.removeEntry) {
-                state.logisticsConfig.reset(resource);
-                return AssetSyncPacket.logisticsConfigRemoved(packet.assetId, packet.resourceKey);
-            } else {
-                LogisticsResourceConfig config = new LogisticsResourceConfig(
-                    packet.minReserve,
-                    packet.orderSize,
-                    packet.isImportEnabled,
-                    packet.isSupplyEnabled);
-                state.logisticsConfig.set(resource, config);
-                return AssetSyncPacket.logisticsConfigUpdated(
-                    packet.assetId,
-                    packet.resourceKey,
+        if (resource == null) return null;
+        if (removeEntry) {
+            asset.logisticsConfig.reset(resource);
+            LogisticStore.updateSignalsForFacility(asset);
+            asset.bumpSyncRevision();
+            return AssetSyncPacket.logisticsConfigRemoved(assetId, resource)
+                .withSyncRevision(asset.getSyncRevision());
+        } else {
+            LogisticsResourceConfig config = new LogisticsResourceConfig(
+                minReserve,
+                orderSize,
+                isImportEnabled,
+                isSupplyEnabled);
+            config = (accessMode == null ? LogisticsConfigAccessMode.FULL : accessMode).sanitize(config);
+            asset.logisticsConfig.set(resource, config);
+            LogisticStore.updateSignalsForFacility(asset);
+            asset.bumpSyncRevision();
+            return AssetSyncPacket
+                .logisticsConfigUpdated(
+                    assetId,
+                    resource,
                     config.minReserve(),
                     config.orderSize(),
                     config.isImportEnabled(),
-                    config.isSupplyEnabled());
-            }
+                    config.isSupplyEnabled())
+                .withSyncRevision(asset.getSyncRevision());
         }
     }
+
 }

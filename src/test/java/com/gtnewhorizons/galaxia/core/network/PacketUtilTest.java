@@ -1,7 +1,6 @@
 package com.gtnewhorizons.galaxia.core.network;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
 
@@ -15,15 +14,10 @@ final class PacketUtilTest {
     }
 
     @Test
-    void readEnumFallsBackToFirstValueForUnknownOrdinal() {
+    void readEnumCrashesForUnknownOrdinal() {
         var buf = Unpooled.buffer();
         buf.writeByte(99);
 
-        assertEquals(TestEnum.FIRST, PacketUtil.readEnum(buf, TestEnum.class));
-    }
-
-    @Test
-    void enumFromByteReturnsNullForUnknownOrdinal() {
-        assertNull(PacketUtil.enumFromByte(99, TestEnum.class));
+        assertThrows(IllegalStateException.class, () -> PacketUtil.readEnum(buf, TestEnum.class));
     }
 }

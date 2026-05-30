@@ -25,12 +25,11 @@ import com.cleanroommc.modularui.widgets.textfield.TextFieldWidget;
 import com.gtnewhorizons.galaxia.api.GalaxiaCelestialAPI;
 import com.gtnewhorizons.galaxia.client.CelestialClient;
 import com.gtnewhorizons.galaxia.client.EnumColors;
+import com.gtnewhorizons.galaxia.client.gui.TeamPermissionScreen;
 import com.gtnewhorizons.galaxia.client.gui.mui.ItemPickerScreen;
 import com.gtnewhorizons.galaxia.client.gui.mui.SafePhantomItemSlot;
 import com.gtnewhorizons.galaxia.core.Galaxia;
-import com.gtnewhorizons.galaxia.core.network.AssetInventoryUpdatePacket;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialAsset;
-import com.gtnewhorizons.galaxia.registry.celestial.CelestialAssetStore;
 import com.gtnewhorizons.galaxia.registry.celestial.CelestialObject;
 import com.gtnewhorizons.galaxia.registry.outpost.ItemStackWrapper;
 
@@ -84,6 +83,11 @@ public class CelestialSidebarWidget extends ParentWidget<CelestialSidebarWidget>
     private static final int DEBUG_GHOST_SLOT_LEFT = DEBUG_PANEL_PADDING + 110;
     private static final int DEBUG_PICK_BUTTON_LEFT = DEBUG_PANEL_PADDING + 134;
     private static final int DEBUG_PICK_BUTTON_WIDTH = 68;
+
+    // Permissions button (bottom-anchored, only for team owners)
+    private static final int PERMISSIONS_BTN_WIDTH = 100;
+    private static final int PERMISSIONS_BTN_HEIGHT = 16;
+    private static final int PERMISSIONS_BTN_BOTTOM = 6;
 
     public CelestialSidebarWidget(CelestialObject root, CelestialObject currentSystem,
         OrbitalView.OrbitalMapWidget map) {
@@ -168,6 +172,7 @@ public class CelestialSidebarWidget extends ParentWidget<CelestialSidebarWidget>
         if (handleTransferSimulatorButtonClick(localX, localYAbsolute)) return true;
         if (handleSupplyDebugButtonClick(localX, localYAbsolute)) return true;
         if (supplyDebugPanelOpen && handleSupplyDebugPanelClick(localX, localYAbsolute)) return true;
+        if (handlePermissionsButtonClick(localX, localYAbsolute)) return true;
         if (activeLayer == root) return false;
         VisibleEntry entry = findVisibleRowAt(localX, localYAbsolute);
         if (entry == null) return false;
@@ -178,6 +183,7 @@ public class CelestialSidebarWidget extends ParentWidget<CelestialSidebarWidget>
             return true;
         }
         map.focusOn(entry.body());
+        handleMapSelection(entry.body());
         return true;
     }
 
@@ -330,6 +336,26 @@ public class CelestialSidebarWidget extends ParentWidget<CelestialSidebarWidget>
             return true;
         }
         return false;
+    }
+
+    private boolean handlePermissionsButtonClick(int localX, int localY) {
+        int btnLeft = getPermissionsButtonLeft();
+        int btnTop = getPermissionsButtonTop();
+        if (localX >= btnLeft && localX <= btnLeft + PERMISSIONS_BTN_WIDTH
+            && localY >= btnTop
+            && localY <= btnTop + PERMISSIONS_BTN_HEIGHT) {
+            TeamPermissionScreen.open();
+            return true;
+        }
+        return false;
+    }
+
+    private int getPermissionsButtonLeft() {
+        return (getArea().width - PERMISSIONS_BTN_WIDTH) / 2;
+    }
+
+    private int getPermissionsButtonTop() {
+        return getArea().height - PERMISSIONS_BTN_HEIGHT - PERMISSIONS_BTN_BOTTOM;
     }
 
     private void selectLayer(CelestialObject layerRoot) {
@@ -548,7 +574,7 @@ public class CelestialSidebarWidget extends ParentWidget<CelestialSidebarWidget>
      */
     private CelestialAsset resolveSupplyDebugAsset() {
         if (supplyDebugTargetAssetId != null) {
-            CelestialAsset pinned = CelestialAssetStore.findAsset(supplyDebugTargetAssetId);
+            CelestialAsset pinned = CelestialClient.getByAssetId(supplyDebugTargetAssetId);
             if (pinned != null && pinned.status() == CelestialAsset.Status.OPERATIONAL
                 && (pinned.kind == CelestialAsset.Kind.AUTOMATED_OUTPOST
                     || pinned.kind == CelestialAsset.Kind.AUTOMATED_STATION)) {
@@ -559,7 +585,7 @@ public class CelestialSidebarWidget extends ParentWidget<CelestialSidebarWidget>
         CelestialAsset.ID currentAssetId = resolveSupplyDebugAssetId();
         if (currentAssetId != null) {
             supplyDebugTargetAssetId = currentAssetId;
-            return CelestialAssetStore.findAsset(currentAssetId);
+            return CelestialClient.getByAssetId(currentAssetId);
         }
         return null;
     }
@@ -600,7 +626,7 @@ public class CelestialSidebarWidget extends ParentWidget<CelestialSidebarWidget>
         ItemStackWrapper resource = ItemStackWrapper.of(selectedStack);
         if (resource == null) return;
         Galaxia.LOG.info("[Supply Debug] Adding {} x {} to {}", amount, resource, asset.assetId);
-        Galaxia.GALAXIA_NETWORK.sendToServer(AssetInventoryUpdatePacket.add(asset.assetId, resource, amount));
+        CelestialClient.addInventory(asset.assetId, resource, amount);
     }
 
     private void drawInlineButton(int x, int y, int width, int height, String label, boolean enabled) {
@@ -689,6 +715,15 @@ public class CelestialSidebarWidget extends ParentWidget<CelestialSidebarWidget>
             "Supply Debug",
             supplyDebugPanelOpen);
         updateSupplyDebugFieldPositions();
+        int btnLeft = getPermissionsButtonLeft();
+        int btnTop = getPermissionsButtonTop();
+        drawInlineButton(
+            btnLeft,
+            btnTop,
+            PERMISSIONS_BTN_WIDTH,
+            PERMISSIONS_BTN_HEIGHT,
+            StatCollector.translateToLocal("galaxia.gui.team_config.button"),
+            true);
         if (supplyDebugPanelOpen) {
             drawSupplyDebugPanel(context, widgetTheme);
             return;
